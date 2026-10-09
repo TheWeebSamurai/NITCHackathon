@@ -219,6 +219,9 @@ export async function changeRoleByEmail(email, role, departmentId = null) {
     next_role: role,
     next_department: departmentId,
   });
+  if (error?.code === 'PGRST202') {
+    throw new Error('Role-by-email support is not available in this Supabase project yet. Run 20261010020000_moderator_petition_workflow.sql in the project SQL Editor, then retry.', { cause: error });
+  }
   throwStoreError('Could not change account role', error);
 }
 
