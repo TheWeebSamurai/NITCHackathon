@@ -1,24 +1,34 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   changeRoleByEmail,
+  assignWastePickup,
+  createWastePickup,
   createDepartment,
   deleteCategory,
   deleteDepartment,
   getCategories,
   getAdminPetitions,
   getAdminProjects,
+  getAdminWastePickups,
+  getAshaWorkers,
+  getAssignedWastePickups,
   getCivicSyncRole,
   getDepartments,
   getLocalitySuggestions,
   getPetitions,
   getProjects,
+  getResidentVerification,
+  getResidentWastePickups,
   getScheduleConflicts,
   getUpdates,
   renameDepartment,
   reviewPetition,
+  saveProjectCheckpoint,
+  saveResidentVerification,
   saveCategory,
   savePublicWork,
   submitPetition,
+  updateWastePickupStatus,
 } from './services/civicStore';
 import { lookupKeralaPincode } from './services/postalService';
 import { supabase } from './utils/supabase';
@@ -28,6 +38,7 @@ const navigation = [
   { id: 'overview', label: 'Overview', icon: 'grid' },
   { id: 'projects', label: 'Public works', icon: 'work' },
   { id: 'petitions', label: 'Community petitions', icon: 'petition' },
+  { id: 'waste', label: 'Household pickup', icon: 'water' },
   { id: 'updates', label: 'Updates & notices', icon: 'bell' },
 ];
 
@@ -158,7 +169,97 @@ function AuthDialog({ onClose, onVerified }) {
         {!sent ? <form onSubmit={submitEmail}><label htmlFor="auth-email">Email address</label><input id="auth-email" type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} required /><button type="submit" className="button-primary" disabled={busy}>{busy ? 'Sending…' : 'Send sign-in code'}</button></form>
           : <form onSubmit={verifyCode}><label htmlFor="auth-code">One-time code</label><input id="auth-code" inputMode="numeric" autoComplete="one-time-code" value={code} onChange={(event) => setCode(event.target.value)} minLength="6" maxLength="8" required /><button type="submit" className="button-primary" disabled={busy}>{busy ? 'Verifying…' : 'Verify and continue'}</button><button type="button" className="plain-link auth-resend" onClick={() => { setSent(false); setCode(''); }}>Use a different email</button></form>}
         {error && <p className="form-error" role="alert">{error}</p>}
-        <p className="auth-privacy">Authentication is handled by the configured Supabase project. Email OTP must be enabled in its Auth settings.</p>
+        <p className="auth-privacy">Email sign-in is handled by Supabase. Petitions require a private resident profile; household pickup requests also require verified phone OTP.</p>
+      </section>
+    </div>
+  );
+}
+
+function ResidentVerificationDialog({ session, residentProfile, onClose, onVerified, requirePhone = true }) {
+  const [fullName, setFullName] = useState(residentProfile?.full_name ?? '');
+  const [dateOfBirth, setDateOfBirth] = useState(residentProfile?.date_of_birth ?? '');
+  const [phone, setPhone] = useState(session.user.phone ?? '');
+  const [code, setCode] = useState('');
+  const [sent, setSent] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  async function saveAndSendCode(event) {
+    event.preventDefault();
+    const normalizedPhone = phone.replace(/[\s()-]/g, '');
+    if (requirePhone && !/^\+[1-9]\d{7,14}$/.test(normalizedPhone)) {
+      setError('Enter a phone number in international format, such as +919876543210.');
+      return;
+    }
+    setBusy(true);
+    setError('');
+    try {
+      await saveResidentVerification(session.user.id, fullName, dateOfBirth);
+      if (!requirePhone) {
+        onVerified(session, { full_name: fullName.trim(), date_of_birth: dateOfBirth });
+        return;
+      }
+      if (session.user.phone_confirmed_at && session.user.phone === normalizedPhone) {
+        onVerified(session, { full_name: fullName.trim(), date_of_birth: dateOfBirth });
+        return;
+      }
+      const { error: phoneError } = await supabase.auth.updateUser({ phone: normalizedPhone });
+      if (phoneError) throw new Error(`Could not send a phone verification code: ${phoneError.message}`, { cause: phoneError });
+      setSent(true);
+    } catch (saveError) {
+      setError(saveError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function verifyPhone(event) {
+    event.preventDefault();
+    setBusy(true);
+    setError('');
+    try {
+      const normalizedPhone = phone.replace(/[\s()-]/g, '');
+      const { data: verifiedData, error: verifyError } = await supabase.auth.verifyOtp({
+        phone: normalizedPhone,
+        token: code.trim(),
+        type: 'phone_change',
+      });
+      if (verifyError) throw new Error(`Could not verify that phone code: ${verifyError.message}`, { cause: verifyError });
+      let nextSession = verifiedData.session;
+      if (!nextSession) {
+        const { data, error: sessionError } = await supabase.auth.getSession();
+        if (sessionError) throw new Error(`Phone was verified, but the updated session could not be loaded: ${sessionError.message}`, { cause: sessionError });
+        nextSession = data.session;
+      }
+      if (!nextSession) throw new Error('Phone was verified, but CivicSync could not refresh your sign-in session. Please sign in again.');
+      onVerified(nextSession, { full_name: fullName.trim(), date_of_birth: dateOfBirth });
+    } catch (verifyError) {
+      setError(verifyError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <section className="auth-dialog resident-verification-dialog" role="dialog" aria-modal="true" aria-labelledby="resident-verification-title">
+        <button type="button" className="dialog-close" onClick={onClose} aria-label="Close resident verification"><Icon name="close" /></button>
+        <span className="auth-icon"><Icon name="shield" size={21} /></span><p className="dialog-kicker">PRIVATE RESIDENT DETAILS</p>
+        <h2 id="resident-verification-title">{sent ? 'Verify your phone' : requirePhone ? 'Complete resident verification' : 'Add your resident details'}</h2>
+        <p className="dialog-description">{sent ? `Enter the SMS code sent to ${phone}.` : requirePhone ? 'Add your name and date of birth, then confirm you can receive an SMS at your phone number.' : 'Add your name and date of birth to submit a community petition. Phone verification is not required for petitions.'}</p>
+        {!sent ? <form onSubmit={saveAndSendCode}>
+          <label htmlFor="resident-full-name">Full legal name</label><input id="resident-full-name" autoComplete="name" value={fullName} onChange={(event) => setFullName(event.target.value)} required minLength={2} maxLength={160} />
+          <label htmlFor="resident-date-of-birth">Date of birth</label><input id="resident-date-of-birth" type="date" autoComplete="bday" max={new Date().toISOString().slice(0, 10)} value={dateOfBirth} onChange={(event) => setDateOfBirth(event.target.value)} required />
+          {requirePhone && <><label htmlFor="resident-phone">Mobile phone</label><input id="resident-phone" type="tel" autoComplete="tel" inputMode="tel" placeholder="+91 98765 43210" value={phone} onChange={(event) => setPhone(event.target.value)} required /></>}
+          <div className="form-privacy"><Icon name="shield" size={16} /> Name and date of birth are private to your account. {requirePhone ? 'Phone OTP verifies phone access; it is not government identity verification.' : 'These details are self-reported and are not government identity verification.'}</div>
+          <button type="submit" className="button-primary" disabled={busy}>{busy ? 'Saving…' : requirePhone ? 'Save details and send OTP' : 'Save details and continue'}</button>
+        </form> : <form onSubmit={verifyPhone}>
+          <label htmlFor="resident-phone-code">SMS one-time code</label><input id="resident-phone-code" inputMode="numeric" autoComplete="one-time-code" value={code} onChange={(event) => setCode(event.target.value)} minLength={4} maxLength={8} required />
+          <button type="submit" className="button-primary" disabled={busy}>{busy ? 'Verifying…' : 'Verify phone and continue'}</button>
+          <button type="button" className="plain-link auth-resend" onClick={() => { setSent(false); setCode(''); }}>Change details or phone number</button>
+        </form>}
+        {error && <p className="form-error" role="alert">{error}</p>}
+        <p className="auth-privacy">{requirePhone ? 'SMS phone verification must be enabled and configured in Supabase Auth. Date of birth is self-reported and is not independently validated.' : 'Date of birth is self-reported and is not independently validated.'}</p>
       </section>
     </div>
   );
@@ -204,7 +305,7 @@ function PetitionDialog({ pin, localities, onClose, onSubmit }) {
       <section className="petition-dialog" role="dialog" aria-modal="true" aria-labelledby="petition-title">
         <button type="button" className="dialog-close" onClick={onClose} aria-label="Close petition form"><Icon name="close" /></button>
         <p className="dialog-kicker">COMMUNITY VOICE</p><h2 id="petition-title">Request an improvement</h2>
-        <p className="dialog-description">Your request is visible only to you and authorized reviewers. An approved petition still needs a separate government review and schedule.</p>
+        <p className="dialog-description">Your request is visible only to you and authorized reviewers. Approval creates an unpublished draft project for staff to review; it is not a government commitment.</p>
         <form onSubmit={submit}>
           <label htmlFor="petition-title-input">Request title</label><input id="petition-title-input" name="title" value={form.title} onChange={update} placeholder="e.g. Repair the footpath near the market" required maxLength={100} />
           <div className="form-grid">
@@ -224,20 +325,55 @@ function PetitionDialog({ pin, localities, onClose, onSubmit }) {
 
 const workStatuses = ['draft', 'under_review', 'scheduled', 'in_progress', 'postponed', 'completed', 'cancelled'];
 const petitionStatuses = ['submitted', 'under_review', 'approved', 'rejected', 'revision_requested'];
+const pickupStatuses = {
+  requested: 'Requested',
+  assigned: 'Worker assigned',
+  on_the_way: 'On the way',
+  at_door: 'At your home',
+  bag_collected: 'Bag picked up',
+  completed: 'Pickup complete',
+  unable_to_collect: 'Could not collect',
+};
 
-async function fetchAdminData() {
-  const results = await Promise.allSettled([
+function PetitionReviewForm({ petition, departments, categories, busy, onSubmit }) {
+  const [status, setStatus] = useState(petition.status.toLowerCase().replaceAll(' ', '_'));
+  return (
+    <form className="admin-review-form" onSubmit={onSubmit}>
+      <label>Status<select name="status" value={status} onChange={(event) => setStatus(event.target.value)}>{petitionStatuses.map((item) => <option key={item} value={item}>{item.replaceAll('_', ' ')}</option>)}</select></label>
+      <label>Response for the petitioner<textarea name="response" rows="2" maxLength="3000" defaultValue={petition.response} placeholder="Share an update or explain the decision." /></label>
+      {status === 'approved' && !petition.publicWorkId && <div className="draft-project-fields">
+        <strong>Approval creates a linked draft project</strong>
+        <p>Choose the responsible department and planning dates. The draft stays unpublished until staff review and publish it.</p>
+        <label>Responsible department<select name="project_department" required><option value="">Select department</option>{departments.map((department) => <option key={department.id} value={department.id}>{department.name}</option>)}</select></label>
+        <label>Public-work category<select name="project_category" required defaultValue={categories.find((category) => category.name === petition.category && category.is_active && category.for_projects)?.name ?? ''}><option value="">Select category</option>{categories.filter((category) => category.is_active && category.for_projects).map((category) => <option key={category.name} value={category.name}>{category.name}</option>)}</select></label>
+        <div className="form-grid">
+          <label>Planning start<input type="date" name="project_start" required /></label>
+          <label>Planning end<input type="date" name="project_end" required /></label>
+        </div>
+      </div>}
+      {petition.publicWorkId && <p className="field-hint">Linked draft project: {petition.publicWorkCode || petition.publicWorkId}. Edit and publish it from Projects.</p>}
+      <button type="submit" className="button-primary" disabled={busy}>{busy ? 'Saving…' : 'Save review'}</button>
+    </form>
+  );
+}
+
+async function fetchAdminData(role) {
+  const requests = [
     getAdminProjects(),
     getAdminPetitions(),
     getDepartments(),
     getCategories(),
-  ]);
-  const [projects, petitions, departments, categories] = results;
+  ];
+  if (role === 'admin') requests.push(getAdminWastePickups(), getAshaWorkers());
+  const results = await Promise.allSettled(requests);
+  const [projects, petitions, departments, categories, pickups, workers] = results;
   return {
     projects: projects.status === 'fulfilled' ? projects.value : [],
     petitions: petitions.status === 'fulfilled' ? petitions.value : [],
     departments: departments.status === 'fulfilled' ? departments.value : [],
     categories: categories.status === 'fulfilled' ? categories.value : [],
+    pickups: pickups?.status === 'fulfilled' ? pickups.value : [],
+    workers: workers?.status === 'fulfilled' ? workers.value : [],
     errors: results.filter((result) => result.status === 'rejected').map((result) => result.reason.message),
   };
 }
@@ -247,6 +383,8 @@ function AdminPanel({ session, profile, onNotice }) {
   const [section, setSection] = useState('projects');
   const [projects, setProjects] = useState([]);
   const [petitions, setPetitions] = useState([]);
+  const [pickups, setPickups] = useState([]);
+  const [workers, setWorkers] = useState([]);
   const [departments, setDepartments] = useState([]);
   const [categories, setCategories] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -261,6 +399,9 @@ function AdminPanel({ session, profile, onNotice }) {
   const [roleDepartment, setRoleDepartment] = useState('');
   const [departmentName, setDepartmentName] = useState('');
   const [editingDepartment, setEditingDepartment] = useState(null);
+  const [checkpointProjectId, setCheckpointProjectId] = useState('');
+  const [checkpointTitle, setCheckpointTitle] = useState('');
+  const [checkpointDescription, setCheckpointDescription] = useState('');
   const canManageAccess = role === 'admin';
   const canVerifyPetitions = role === 'admin';
 
@@ -268,9 +409,11 @@ function AdminPanel({ session, profile, onNotice }) {
     setLoading(true);
     setError('');
     try {
-      const data = await fetchAdminData();
+      const data = await fetchAdminData(role);
       setProjects(data.projects);
       setPetitions(data.petitions);
+      setPickups(data.pickups);
+      setWorkers(data.workers);
       setDepartments(data.departments);
       setCategories(data.categories);
       setError(data.errors.join(' '));
@@ -285,10 +428,12 @@ function AdminPanel({ session, profile, onNotice }) {
     let active = true;
     async function load() {
       try {
-        const data = await fetchAdminData();
+        const data = await fetchAdminData(role);
         if (active) {
           setProjects(data.projects);
           setPetitions(data.petitions);
+          setPickups(data.pickups);
+          setWorkers(data.workers);
           setDepartments(data.departments);
           setCategories(data.categories);
           setError(data.errors.join(' '));
@@ -301,7 +446,7 @@ function AdminPanel({ session, profile, onNotice }) {
     }
     load();
     return () => { active = false; };
-  }, []);
+  }, [role]);
 
   function startNewProject() {
     setVerifiedPin('');
@@ -375,9 +520,16 @@ function AdminPanel({ session, profile, onNotice }) {
     setBusy(true);
     setError('');
     try {
-      await reviewPetition(petition.recordId, form.get('status'), form.get('response'));
+      await reviewPetition(petition.recordId, form.get('status'), form.get('response'), {
+        departmentId: form.get('project_department'),
+        category: form.get('project_category'),
+        startDate: form.get('project_start'),
+        endDate: form.get('project_end'),
+      });
       await refresh();
-      onNotice(`Petition ${petition.id} review saved.`);
+      onNotice(form.get('status') === 'approved'
+        ? `Petition ${petition.id} approved. Its draft public work is available in Projects for review and publication.`
+        : `Petition ${petition.id} review saved.`);
     } catch (reviewError) {
       setError(reviewError.message);
     } finally {
@@ -385,14 +537,63 @@ function AdminPanel({ session, profile, onNotice }) {
     }
   }
 
-  async function submitRole(event) {
+  async function submitCheckpoint(event, project) {
     event.preventDefault();
     setBusy(true);
     setError('');
     try {
-      await changeRoleByEmail(roleEmail, roleName, roleName === 'department_official' ? roleDepartment : null);
+      await saveProjectCheckpoint(project.recordId, { title: checkpointTitle, description: checkpointDescription }, false);
+      setCheckpointProjectId('');
+      setCheckpointTitle('');
+      setCheckpointDescription('');
+      await refresh();
+      onNotice('Checkpoint saved privately. An administrator or coordinator can publish it to the project timeline.');
+    } catch (checkpointError) {
+      setError(checkpointError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function publishCheckpoint(project, checkpoint) {
+    setBusy(true);
+    setError('');
+    try {
+      await saveProjectCheckpoint(project.recordId, checkpoint, true);
+      await refresh();
+      onNotice('Checkpoint published to the project timeline.');
+    } catch (checkpointError) {
+      setError(checkpointError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function assignPickup(pickupId, workerId) {
+    if (!workerId) return;
+    setBusy(true);
+    setError('');
+    try {
+      await assignWastePickup(pickupId, workerId);
+      await refresh();
+      onNotice('Household pickup assigned to an ASHA Worker.');
+    } catch (assignError) {
+      setError(assignError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function submitRole(event) {
+    event.preventDefault();
+    const targetEmail = roleEmail.trim();
+    setBusy(true);
+    setError('');
+    try {
+      await changeRoleByEmail(targetEmail, roleName, roleName === 'department_official' ? roleDepartment : null);
       setRoleEmail('');
-      onNotice(`Role updated for ${roleEmail}. They need an existing CivicSync account.`);
+      await refresh();
+      onNotice(`${targetEmail} is now assigned the ${roleName.replaceAll('_', ' ')} role.`);
     } catch (roleError) {
       setError(roleError.message);
     } finally {
@@ -516,6 +717,7 @@ function AdminPanel({ session, profile, onNotice }) {
       <nav className="admin-tabs" aria-label="Control room sections">
         <button type="button" className={section === 'projects' ? 'active' : ''} onClick={() => setSection('projects')}>Projects <span>{projects.length}</span></button>
         <button type="button" className={section === 'petitions' ? 'active' : ''} onClick={() => setSection('petitions')}>Petition review <span>{petitions.filter((item) => ['Submitted', 'Under Review'].includes(item.status)).length}</span></button>
+        {role === 'admin' && <button type="button" className={section === 'pickups' ? 'active' : ''} onClick={() => setSection('pickups')}>Waste pickup <span>{pickups.filter((item) => ['requested', 'assigned'].includes(item.status)).length}</span></button>}
         {canManageAccess && <button type="button" className={section === 'access' ? 'active' : ''} onClick={() => setSection('access')}>Access &amp; tags</button>}
       </nav>
       {error && <div className="data-error" role="alert"><Icon name="alert" size={17} /><span>{error}</span><button type="button" onClick={() => setError('')} aria-label="Dismiss error"><Icon name="close" size={16} /></button></div>}
@@ -540,7 +742,13 @@ function AdminPanel({ session, profile, onNotice }) {
             {role === 'admin' || role === 'coordinator' ? <label className="admin-checkbox"><input type="checkbox" checked={projectForm.isPublished} onChange={(event) => setProjectForm({ ...projectForm, isPublished: event.target.checked })} /> Publish this project to residents</label> : <p className="field-hint">Projects created by department officials are saved as unpublished drafts for coordinator review.</p>}
             <button type="submit" className="button-primary" disabled={busy || !verifiedPin}>{busy ? 'Saving…' : projectForm.recordId ? 'Save project' : 'Create project'}</button>
           </form>}
-          {projects.length === 0 ? <div className="empty-state"><h3>No projects yet</h3><p>Add an official public-work record to make it available for publication.</p></div> : <div className="admin-record-list">{projects.map((project) => <article className="admin-record" key={project.recordId}><div><strong>{project.title}</strong><p>{project.locality} · PIN {project.pin} · {project.department}</p><span className={`admin-status ${project.status === 'Draft' || project.status === 'Under Review' ? 'unpublished' : ''}`}>{project.status}</span></div><button type="button" className="button-secondary" onClick={() => editProject(project)}>Edit</button></article>)}</div>}
+          {projects.length === 0 ? <div className="empty-state"><h3>No projects yet</h3><p>Add an official public-work record to make it available for publication.</p></div> : <div className="admin-record-list">{projects.map((project) => <article className="admin-record admin-project-record" key={project.recordId}>
+            <div><strong>{project.title}</strong><p>{project.locality} · PIN {project.pin} · {project.department}</p><span className={`admin-status ${project.status === 'Draft' || project.status === 'Under Review' ? 'unpublished' : ''}`}>{project.status}</span>
+              <div className="checkpoint-list">{project.timeline.map((checkpoint) => <div className="checkpoint-row" key={checkpoint.recordId}><span><strong>{checkpoint.title}</strong><small>{checkpoint.date} · {checkpoint.isCheckpoint ? checkpoint.isPublic ? 'Published' : 'Pending approval' : 'System update'}</small><span>{checkpoint.detail}</span></span>{checkpoint.isCheckpoint && !checkpoint.isPublic && canVerifyPetitions && project.isPublished && <button type="button" className="button-secondary" disabled={busy} onClick={() => publishCheckpoint(project, checkpoint)}>Approve &amp; publish</button>}</div>)}</div>
+              {checkpointProjectId === project.recordId ? <form className="checkpoint-form" onSubmit={(event) => submitCheckpoint(event, project)}><label>Checkpoint title<input required minLength={3} maxLength={180} value={checkpointTitle} onChange={(event) => setCheckpointTitle(event.target.value)} /></label><label>Update details<textarea required minLength={3} maxLength={3000} rows="2" value={checkpointDescription} onChange={(event) => setCheckpointDescription(event.target.value)} /></label><div><button type="submit" className="button-primary" disabled={busy}>{busy ? 'Saving…' : 'Save checkpoint'}</button><button type="button" className="button-secondary" onClick={() => setCheckpointProjectId('')}>Cancel</button></div></form>
+                : <button type="button" className="admin-inline-link" onClick={() => { setCheckpointProjectId(project.recordId); setCheckpointTitle(''); setCheckpointDescription(''); }}>Add a project checkpoint</button>}
+            </div><button type="button" className="button-secondary" onClick={() => editProject(project)}>Edit</button>
+          </article>)}</div>}
         </section>}
         {section === 'petitions' && <section className="admin-section">
           <div className="admin-section-heading"><div><h3>Community petitions</h3><p>Private submissions are shown only to authorized reviewers and their owners.</p></div></div>
@@ -549,21 +757,28 @@ function AdminPanel({ session, profile, onNotice }) {
             <p className="admin-petition-meta">{petition.category} · {petition.locality}, PIN {petition.pin}</p>
             <p className="admin-petition-description">{petition.description}</p>
             {petition.reason && <p className="admin-petition-reason"><strong>Why it matters:</strong> {petition.reason}</p>}
+            {petition.publicWorkId && <p className="field-hint">Linked draft public work: {petition.publicWorkCode || petition.publicWorkId}</p>}
             {canVerifyPetitions && petition.userId !== session.user.id
-              ? <form className="admin-review-form" onSubmit={(event) => submitReview(event, petition)}>
-                <label>Status<select name="status" defaultValue={petition.status.toLowerCase().replaceAll(' ', '_')}>{petitionStatuses.map((status) => <option key={status} value={status}>{status.replaceAll('_', ' ')}</option>)}</select></label>
-                <label>Response for the petitioner<textarea name="response" rows="2" maxLength="3000" defaultValue={petition.response} placeholder="Share an update or explain the decision." /></label>
-                <button type="submit" className="button-primary" disabled={busy}>{busy ? 'Saving…' : 'Save review'}</button>
-              </form>
+              ? <PetitionReviewForm petition={petition} departments={departments} categories={categories} busy={busy} onSubmit={(event) => submitReview(event, petition)} />
               : <p className="field-hint">{canVerifyPetitions ? 'Admins cannot verify petitions submitted by their own account.' : 'Only administrators can verify petitions. You can review the status of your own submissions here.'}</p>}
           </article>)}</div>}
+        </section>}
+        {section === 'pickups' && role === 'admin' && <section className="admin-section">
+          <div className="admin-section-heading"><div><h3>Household waste pickup</h3><p>Assign resident requests to an ASHA Worker. Their location details are private and shown only to the resident, Admins, and the assigned worker.</p></div></div>
+          {!pickups.length ? <div className="empty-state"><h3>No pickup requests yet</h3><p>Verified residents can request a household bag pickup from the Household pickup page.</p></div> : <div className="admin-record-list">{pickups.map((pickup) => <article className="admin-petition" key={pickup.recordId}>
+            <div className="admin-record-title"><div><span className="petition-id">{pickup.referenceCode} · {pickup.createdAt}</span><h4>{pickup.locality} · PIN {pickup.pin}</h4></div><span className="admin-status">{pickupStatuses[pickup.status]}</span></div>
+            <p className="admin-petition-description"><strong>Pickup address:</strong> {pickup.address}</p>
+            <p className="admin-petition-meta">{pickup.bagCount} bag{pickup.bagCount === 1 ? '' : 's'}{pickup.instructions ? ` · ${pickup.instructions}` : ''}</p>
+            <label>Assign ASHA Worker<select value={pickup.assignedWorkerId ?? ''} disabled={busy || ['completed', 'bag_collected'].includes(pickup.status)} onChange={(event) => assignPickup(pickup.recordId, event.target.value)}><option value="">Unassigned</option>{workers.map((worker) => <option key={worker.worker_id} value={worker.worker_id}>{worker.full_name || worker.email}</option>)}</select></label>
+          </article>)}</div>}
+          {!workers.length && <p className="field-hint">No ASHA Worker accounts are available. Grant the ASHA Worker role under Access &amp; tags first.</p>}
         </section>}
         {section === 'access' && canManageAccess && <section className="admin-section">
           <div className="admin-access-grid">
           <form className="admin-form" onSubmit={submitRole}>
             <div><h3>Grant a CivicSync role</h3><p>The person must have already signed in at least once. This does not invite or create their account.</p></div>
             <label>Account email<input type="email" required value={roleEmail} onChange={(event) => setRoleEmail(event.target.value)} placeholder="person@example.com" /></label>
-            <label>Role<select value={roleName} onChange={(event) => setRoleName(event.target.value)}><option value="admin">Administrator</option><option value="moderator">Moderator (may submit petitions)</option><option value="coordinator">Coordinator</option><option value="department_official">Department official</option><option value="citizen">Citizen (remove staff access)</option></select></label>
+            <label>Role<select value={roleName} onChange={(event) => setRoleName(event.target.value)}><option value="admin">Administrator</option><option value="moderator">Moderator</option><option value="asha_worker">ASHA Worker (pickup route)</option><option value="coordinator">Coordinator</option><option value="department_official">Department official</option><option value="citizen">Citizen (remove staff access)</option></select></label>
             {roleName === 'department_official' && <label>Department<select required value={roleDepartment} onChange={(event) => setRoleDepartment(event.target.value)}><option value="">Select department</option>{departments.map((department) => <option key={department.id} value={department.id}>{department.name}</option>)}</select></label>}
             <button type="submit" className="button-primary" disabled={busy}>{busy ? 'Updating…' : 'Update account role'}</button>
           </form>
@@ -611,14 +826,14 @@ function LegalPage({ kind }) {
       <div className="legal-draft"><Icon name="alert" size={17} /><span><strong>Prototype draft—not ready for production.</strong> This page is a plain-language starting point, not legal advice. The operator’s legal identity, contact details, retention periods, and final terms must be confirmed before public launch.</span></div>
       {privacy ? <>
         <h3>Information this prototype handles</h3>        <p>When you search, your six-digit PIN code is sent through a CivicSync Supabase Edge Function to the third-party postal lookup service <a href="https://api.postalpincode.in/" target="_blank" rel="noreferrer">api.postalpincode.in</a> to check whether it belongs to Kerala. The lookup result is cached in CivicSync’s Supabase database for subsequent searches. The postal service receives the lookup request from the server, not your direct browser connection.</p>
-        <p>The verification function stores a cryptographic hash of the requesting IP address temporarily to limit automated requests; raw IP addresses are not stored by CivicSync in this rate-limit table. Exact retention and provider logging periods must be confirmed before launch. If you use email OTP sign-in, Supabase Auth processes your email address and authentication data, with the session stored on your device. If you submit a petition, CivicSync stores your account ID, request title, category, PIN code, locality, description, optional reason, and submission/status timestamps in Supabase. Petition details are restricted to you and authorized reviewers by database access policies.</p>
-        <h3>Why information is used</h3><p>PIN lookups identify the area for public works. Account and petition data supports authentication, petition review, and your private tracking view. Do not submit sensitive personal information, identity documents, or information about another person.</p>
+        <p>The PIN verification function stores a cryptographic hash of the requesting IP address temporarily to limit automated PIN lookups; raw IP addresses are not stored in that table. Petition submissions do not have an application-level rate limit. Exact retention and provider logging periods must be confirmed before launch. If you use email OTP sign-in, Supabase Auth processes your email address and authentication data. Resident verification stores your full name and date of birth in a private account record, while Supabase Auth verifies control of your phone by SMS OTP. Phone OTP verifies phone access, not legal identity, and date of birth is self-reported. If you submit a petition, CivicSync stores your account ID, request title, category, PIN code, locality, description, optional reason, and submission/status timestamps. Petition details are restricted to you and authorized reviewers by database access policies.</p>
+        <h3>Why information is used</h3><p>PIN lookups identify the area for public works. A private name and date of birth are required to submit petitions; household pickup requests also require a verified phone. Pickup requests contain a household address and are visible only to that resident, administrators, and the assigned ASHA Worker. These fields do not constitute government identity verification.</p>
         <h3>Storage, access, and deletion</h3><p>Data is processed by the Supabase project operator and its infrastructure providers. Exact hosting region, petition retention period, deletion request process, backups, and incident response are not configured in this prototype and must be confirmed before launch. The project currently has no public petition-detail page.</p>
-        <h3>Your choices and contact</h3><p>You can browse public information without signing in. Petition submission requires email OTP. Privacy requests should be directed to the CivicSync Hackathon Project team; a monitored contact email and postal address have not yet been provided.</p>
+        <h3>Your choices and contact</h3><p>You can browse public information without signing in. Petition and pickup submission require email sign-in, a private resident profile, and verified phone OTP. Privacy requests should be directed to the CivicSync Hackathon Project team; a monitored contact email and postal address have not yet been provided.</p>
       </> : <>
-        <h3>About this prototype</h3><p>CivicSync is a hackathon prototype for discovering public works and submitting community improvement requests. It is not a government service and does not represent or speak for a government department. Public project listings may be incomplete or unavailable until an authorized data source is connected.</p>
-        <h3>Use of information</h3><p>Use accurate, lawful information. Do not submit emergency reports, sensitive personal data, identity documents, abusive content, or information you are not authorized to share. This prototype is not an emergency-response channel.</p>
-        <h3>Accounts and requests</h3><p>Email OTP is used to protect petition submission and private tracking. A petition is a request for review—not an approval, promise of public work, or official schedule. Even an approved petition requires separate government review and scheduling. Account and role privileges are subject to secure server-side policies.</p>
+        <h3>About this prototype</h3><p>CivicSync is a hackathon prototype for discovering public works, submitting community improvement requests, and tracking household waste pickups. It is not a government service and does not represent or speak for a government department. Public project listings may be incomplete or unavailable until an authorized data source is connected.</p>
+        <h3>Use of information</h3><p>Use accurate, lawful information. Do not put identity documents, emergency reports, or other sensitive personal data into petition descriptions. Resident profile and household pickup address fields are collected separately for their stated purposes and are not official identity verification. Do not submit abusive content or information you are not authorized to share. This prototype is not an emergency-response channel.</p>
+        <h3>Accounts and requests</h3><p>Email OTP protects sign-in; a private resident profile is required to submit petitions, and verified phone OTP is additionally required for household pickup requests. Phone OTP does not verify legal identity. Petition approval creates an unpublished draft in CivicSync for staff review; it is not an approval, promise of public work, or official government schedule. Household pickup is a prototype workflow and is not an official waste-collection service. Account and role privileges are subject to server-side policies.</p>
         <h3>Public information and availability</h3><p>Use the department named on a project notice to verify dates, service disruptions, and urgent details. The prototype is provided for demonstration and may change or be unavailable. No warranty or service-level commitment is offered by this draft.</p>
         <h3>Operator and governing terms</h3><p>The current operator is identified as the CivicSync Hackathon Project. The responsible legal entity, governing law, dispute process, support contact, and effective date must be confirmed by the project team before production. Nothing here establishes a government relationship.</p>
       </>}
@@ -649,9 +864,11 @@ function App() {
   const [selectedProject, setSelectedProject] = useState(null);
   const [showPetitionForm, setShowPetitionForm] = useState(false);
   const [showAuth, setShowAuth] = useState(false);
+  const [showResidentVerification, setShowResidentVerification] = useState(false);
   const [continueToPetition, setContinueToPetition] = useState(false);
   const [session, setSession] = useState(null);
   const [civicProfileState, setCivicProfile] = useState(null);
+  const [residentVerification, setResidentVerification] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [notice, setNotice] = useState('');
 
@@ -680,9 +897,7 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (!session) {
-      return undefined;
-    }
+    if (!session) return undefined;
     let active = true;
     getCivicSyncRole(session.user.id)
       .then((profile) => { if (active) setCivicProfile({ ...profile, userId: session.user.id }); })
@@ -690,7 +905,27 @@ function App() {
     return () => { active = false; };
   }, [session]);
 
+  useEffect(() => {
+    if (!session) return undefined;
+    let active = true;
+    getResidentVerification(session.user.id)
+      .then((details) => { if (active) setResidentVerification(details ? { ...details, userId: session.user.id } : null); })
+      .catch((error) => { if (active) setDataError(error.message); });
+    return () => { active = false; };
+  }, [session]);
+
   const civicProfile = civicProfileState?.userId === session?.user.id ? civicProfileState : null;
+  const currentResidentVerification = residentVerification?.userId === session?.user.id ? residentVerification : null;
+  const verifiedResident = Boolean(
+    currentResidentVerification?.full_name
+    && currentResidentVerification?.date_of_birth
+    && session?.user.phone_confirmed_at,
+  );
+  const hasResidentDetails = Boolean(
+    currentResidentVerification?.full_name
+    && currentResidentVerification?.date_of_birth,
+  );
+  const canSubmitPetitions = ['citizen', 'moderator', 'representative_pending', 'representative'].includes(civicProfile?.role);
 
   useEffect(() => {
     if (!pin) return undefined;
@@ -718,6 +953,17 @@ function App() {
   }, [pin, lookupVersion]);
 
   useEffect(() => {
+    if (!pin) return undefined;
+    const refreshArea = () => setLookupVersion((version) => version + 1);
+    const channel = supabase
+      .channel(`civicsync-public-area-${pin}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'public_works', filter: `pin_code=eq.${pin}` }, refreshArea)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'project_events', filter: 'is_public=eq.true' }, refreshArea)
+      .subscribe();
+    return () => { void supabase.removeChannel(channel); };
+  }, [pin]);
+
+  useEffect(() => {
     if (!session) return undefined;
     let active = true;
     async function loadPetitions() {
@@ -733,6 +979,19 @@ function App() {
     }
     loadPetitions();
     return () => { active = false; };
+  }, [session]);
+
+  useEffect(() => {
+    if (!session) return undefined;
+    const channel = supabase
+      .channel(`civicsync-petitions-${session.user.id}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'petitions', filter: `user_id=eq.${session.user.id}` }, () => {
+        getPetitions()
+          .then(setPetitions)
+          .catch((error) => setDataError(error.message));
+      })
+      .subscribe();
+    return () => { void supabase.removeChannel(channel); };
   }, [session]);
 
   const departments = [...new Set(projects.map((project) => project.department).filter(Boolean))];
@@ -751,10 +1010,12 @@ function App() {
   const statuses = ['All statuses', 'Scheduled', 'In Progress', 'Postponed', 'Completed', 'Cancelled'];
   const legal = page === 'terms' || page === 'privacy';
   const canReview = ['department_official', 'coordinator', 'admin'].includes(civicProfile?.role);
-  const pageTitle = { overview: 'Locality overview', projects: 'Public works', petitions: 'Community petitions', updates: 'Updates & notices', admin: 'Control room', terms: 'Terms of Service', privacy: 'Privacy Policy' }[page];
-  const visibleNavigation = canReview
-    ? [...navigation, { id: 'admin', label: 'Control room', icon: 'grid' }]
-    : navigation;
+  const pageTitle = { overview: 'Locality overview', projects: 'Public works', petitions: 'Community petitions', waste: 'Household pickup', asha: 'My pickup route', updates: 'Updates & notices', admin: 'Control room', terms: 'Terms of Service', privacy: 'Privacy Policy' }[page];
+  const visibleNavigation = [
+    ...navigation,
+    ...(civicProfile?.role === 'asha_worker' ? [{ id: 'asha', label: 'My pickup route', icon: 'work' }] : []),
+    ...(canReview ? [{ id: 'admin', label: 'Control room', icon: 'grid' }] : []),
+  ];
 
   async function searchPin(event) {
     event.preventDefault();
@@ -784,12 +1045,19 @@ function App() {
   function createPetition() {
     if (!pin) { setNotice('Search and verify a Kerala PIN code before submitting a request.'); return; }
     if (!session) { setContinueToPetition(true); setShowAuth(true); return; }
-    if (civicProfile?.role !== 'moderator') {
-      setNotice(!civicProfile
-        ? 'Your account permissions are still loading. Please try again in a moment.'
-        : civicProfile.role === 'admin'
-          ? 'Administrator accounts cannot submit petitions. Assign a separate account the Moderator role to submit petitions for review.'
-          : 'Only accounts assigned the Moderator role can submit petitions.');
+    if (!civicProfile) {
+      setNotice('Your account permissions are still loading. Please try again in a moment.');
+      return;
+    }
+    if (!canSubmitPetitions) {
+      setNotice(civicProfile.role === 'admin'
+        ? 'Administrator accounts cannot submit petitions. Use a separate resident account.'
+        : 'This staff account cannot submit resident petitions. Sign in with a resident account.');
+      return;
+    }
+    if (!hasResidentDetails) {
+      setContinueToPetition(true);
+      setShowResidentVerification(true);
       return;
     }
     setShowPetitionForm(true);
@@ -809,19 +1077,36 @@ function App() {
     if (continueToPetition) {
       setContinueToPetition(false);
       try {
-        const profile = await getCivicSyncRole(nextSession.user.id);
+        const [profile, verification] = await Promise.all([
+          getCivicSyncRole(nextSession.user.id),
+          getResidentVerification(nextSession.user.id),
+        ]);
         setCivicProfile({ ...profile, userId: nextSession.user.id });
-        if (profile.role === 'moderator' && pin) setShowPetitionForm(true);
-        else setNotice(!pin
-          ? 'Search and verify a Kerala PIN before submitting a petition.'
-          : profile.role === 'admin'
-            ? 'Administrator accounts cannot submit petitions. Assign a separate account the Moderator role to submit petitions for review.'
-            : 'Only accounts assigned the Moderator role can submit petitions.');
+        setResidentVerification(verification ? { ...verification, userId: nextSession.user.id } : null);
+        if (!pin) setNotice('Search and verify a Kerala PIN before submitting a petition.');
+        else if (!['citizen', 'moderator', 'representative_pending', 'representative'].includes(profile.role)) {
+          setNotice(profile.role === 'admin'
+            ? 'Administrator accounts cannot submit petitions. Use a separate resident account.'
+            : 'This staff account cannot submit resident petitions.');
+        } else if (!verification?.full_name || !verification?.date_of_birth) {
+          setContinueToPetition(true);
+          setShowResidentVerification(true);
+        } else setShowPetitionForm(true);
       } catch (error) {
         setDataError(`${error.message}. Your sign-in succeeded, but your account role could not be verified.`);
       }
     } else {
       setNotice('You are signed in. Your petition details are private to you and authorized reviewers.');
+    }
+  }
+
+  function completeResidentVerification(nextSession, verification) {
+    setSession(nextSession);
+    setResidentVerification({ ...verification, userId: nextSession.user.id });
+    setShowResidentVerification(false);
+    if (continueToPetition) {
+      setContinueToPetition(false);
+      setShowPetitionForm(true);
     }
   }
 
@@ -844,7 +1129,7 @@ function App() {
         <nav className="side-nav" aria-label="Main navigation">
           {visibleNavigation.map((item) => <button type="button" key={item.id} className={page === item.id ? 'nav-item active' : 'nav-item'} onClick={() => { setPage(item.id); setNotice(''); }}><Icon name={item.icon} size={19} /><span>{item.label}</span>{item.id === 'updates' && updates.length > 0 && <span className="nav-count">{updates.length}</span>}</button>)}
         </nav>
-        <div className="sidebar-help"><div className="help-icon"><Icon name="people" size={19} /></div><strong>Your neighbourhood, heard.</strong><p>Request a public improvement and follow its progress.</p><button type="button" onClick={createPetition}>Submit a request <Icon name="arrow" size={15} /></button></div>
+        <div className="sidebar-help"><div className="help-icon"><Icon name="people" size={19} /></div><strong>Your neighbourhood, heard.</strong><p>Track public works, request an improvement, or arrange a household pickup.</p><button type="button" onClick={createPetition}>Submit a request <Icon name="arrow" size={15} /></button></div>
         <div className="sidebar-footer"><span className="sample-indicator" /> Kerala-only PIN support<br /><small>Government project data not connected</small></div>
       </aside>
 
@@ -863,9 +1148,9 @@ function App() {
           {notice && <div className="inline-notice" role="status"><Icon name="check" size={17} />{notice}<button type="button" onClick={() => setNotice('')} aria-label="Dismiss message"><Icon name="close" size={16} /></button></div>}
           {dataError && <div className="data-error" role="alert"><Icon name="alert" size={17} /><span>{dataError} Check that the Supabase migration has been applied and the project is configured.</span><button type="button" onClick={() => setDataError('')} aria-label="Dismiss error"><Icon name="close" size={16} /></button></div>}
 
-          <section className="page-heading"><div><p className="eyebrow">{legal ? 'CIVICSYNC HACKATHON PROJECT' : page === 'admin' ? 'AUTHORIZED STAFF' : 'YOUR NEIGHBOURHOOD, IN THE KNOW'}</p><h1>{legal ? pageTitle : page === 'overview' ? 'Good day, neighbour.' : pageTitle}</h1><p className="heading-subtitle">{legal ? 'Review the current draft and note the outstanding production details.' : page === 'admin' ? 'Secure tools for managing public works and community submissions.' : 'Find public works, understand what’s changing, and have a say in your community.'}</p></div>{!legal && page !== 'admin' && (!session || civicProfile?.role === 'moderator') && <button type="button" className="button-primary heading-action" onClick={createPetition}><Icon name="plus" size={17} /> Request an improvement</button>}</section>
+          <section className="page-heading"><div><p className="eyebrow">{legal ? 'CIVICSYNC HACKATHON PROJECT' : page === 'admin' || page === 'asha' ? 'AUTHORIZED STAFF' : 'YOUR NEIGHBOURHOOD, IN THE KNOW'}</p><h1>{legal ? pageTitle : page === 'overview' ? 'Good day, neighbour.' : pageTitle}</h1><p className="heading-subtitle">{legal ? 'Review the current draft and note the outstanding production details.' : page === 'admin' ? 'Secure tools for managing public works and community submissions.' : page === 'asha' ? 'Manage household collection requests assigned to your account.' : 'Find public works, understand what’s changing, and have a say in your community.'}</p></div>{!legal && page !== 'admin' && page !== 'asha' && (!session || canSubmitPetitions) && <button type="button" className="button-primary heading-action" onClick={createPetition}><Icon name="plus" size={17} /> Request an improvement</button>}</section>
 
-          {!legal && page !== 'admin' && <>
+          {!legal && page !== 'admin' && page !== 'asha' && <>
             <form className="pin-search" onSubmit={searchPin}>
               <div className="pin-icon"><Icon name="pin" size={21} /></div><div className="pin-copy"><label htmlFor="pin-code">Kerala area PIN code</label><span>Look up a valid Kerala postal PIN code</span></div>
               <div className="pin-entry"><input id="pin-code" value={pinInput} onChange={(event) => setPinInput(event.target.value.replace(/\D/g, '').slice(0, 6))} inputMode="numeric" autoComplete="postal-code" pattern="[0-9]{6}" maxLength="6" placeholder="e.g. 682001" aria-describedby={pinError ? 'pin-error' : undefined} /><button type="submit" disabled={pinBusy}><Icon name="search" size={17} />{pinBusy ? 'Checking…' : 'Find my area'}</button></div>
@@ -884,12 +1169,14 @@ function App() {
               </section>
               {updates[0] && <section className="notice-card"><span className="notice-symbol"><Icon name="bell" size={18} /></span><div><strong>Local update</strong><p>{updates[0].title} <span>{updates[0].detail}</span></p></div><button type="button" onClick={() => setPage('updates')}>See all updates <Icon name="arrow" size={15} /></button></section>}
               <ProjectSection projects={filteredProjects} allProjects={projects} localities={localities} departments={departments} locality={locality} statusFilter={statusFilter} departmentFilter={departmentFilter} search={search} setLocality={setLocality} setStatusFilter={setStatusFilter} setDepartmentFilter={setDepartmentFilter} setSearch={setSearch} statuses={statuses} onSelect={setSelectedProject} onViewAll={() => setPage('projects')} onReset={resetFilters} loading={loading} compact />
-              <section className="bottom-prompt"><div className="prompt-symbol"><Icon name="petition" size={21} /></div><div><strong>Something in your neighbourhood needs attention?</strong><p>Petition submission is available to authorized Moderator accounts.</p></div>{(!session || civicProfile?.role === 'moderator') && <button type="button" onClick={createPetition}>Start a petition <Icon name="arrow" size={16} /></button>}</section>
+              <section className="bottom-prompt"><div className="prompt-symbol"><Icon name="petition" size={21} /></div><div><strong>Something in your neighbourhood needs attention?</strong><p>Residents can submit requests after adding their private name and date of birth.</p></div>{(!session || canSubmitPetitions) && <button type="button" onClick={createPetition}>Start a petition <Icon name="arrow" size={16} /></button>}</section>
             </> : <div className="empty-state area-empty"><span className="empty-icon"><Icon name="pin" size={23} /></span><h3>Start with your Kerala PIN code</h3><p>Enter a six-digit PIN above. We’ll check it against postal service results and show published CivicSync projects for the matching area.</p></div>}
           </>}
 
           {page === 'projects' && <ProjectSection projects={filteredProjects} allProjects={projects} localities={localities} departments={departments} locality={locality} statusFilter={statusFilter} departmentFilter={departmentFilter} search={search} setLocality={setLocality} setStatusFilter={setStatusFilter} setDepartmentFilter={setDepartmentFilter} setSearch={setSearch} statuses={statuses} onSelect={setSelectedProject} onReset={resetFilters} loading={loading} />}
-          {page === 'petitions' && (session ? <PetitionsPage pin={pin} petitions={petitions.filter((item) => !pin || item.pin === pin)} loading={petitionsLoading} onCreate={createPetition} canSubmit={civicProfile?.role === 'moderator'} /> : <SignInPrompt onSignIn={() => setShowAuth(true)} />)}
+          {page === 'petitions' && (session ? <PetitionsPage pin={pin} petitions={petitions.filter((item) => !pin || item.pin === pin)} loading={petitionsLoading} onCreate={createPetition} canSubmit={canSubmitPetitions} /> : <SignInPrompt onSignIn={() => setShowAuth(true)} />)}
+          {page === 'waste' && <WastePickupPage pin={pin} session={session} profile={civicProfile} verifiedResident={verifiedResident} onSignIn={() => setShowAuth(true)} onVerifyResident={() => setShowResidentVerification(true)} />}
+          {page === 'asha' && (session && civicProfile?.role === 'asha_worker' ? <AshaWorkerPage session={session} /> : <div className="empty-state"><h3>ASHA Worker access required</h3><p>An administrator must assign this role to your CivicSync account.</p></div>)}
           {page === 'updates' && <UpdatesPage updates={updates} onProject={(projectId) => { const match = projects.find((item) => item.id === projectId); if (match) setSelectedProject(match); }} loading={loading} pin={pin} />}
           {page === 'admin' && (session && canReview
             ? <AdminPanel session={session} profile={civicProfile} onNotice={setNotice} />
@@ -902,6 +1189,7 @@ function App() {
       {selectedProject && <ProjectDialog project={selectedProject} allProjects={projects} onClose={() => setSelectedProject(null)} />}
       {showAuth && <AuthDialog onClose={() => { setShowAuth(false); setContinueToPetition(false); }} onVerified={completeSignIn} />}
       {showPetitionForm && session && <PetitionDialog pin={pin} localities={localities} onClose={() => setShowPetitionForm(false)} onSubmit={addPetition} />}
+      {showResidentVerification && session && <ResidentVerificationDialog session={session} residentProfile={currentResidentVerification} onClose={() => { setShowResidentVerification(false); setContinueToPetition(false); }} onVerified={completeResidentVerification} requirePhone={!continueToPetition} />}
     </div>
   );
 }
@@ -923,16 +1211,192 @@ function ProjectSection({ projects, allProjects, localities, departments, locali
 function PetitionsPage({ pin, petitions, loading, onCreate, canSubmit }) {
   return (
     <section className="petitions-page">
-      <div className="petition-intro"><div><span className="petition-feature-icon"><Icon name="people" size={22} /></span><h2>Small changes start with a conversation.</h2><p>Your requests are visible only to you and authorized reviewers. An approved petition still needs separate government review and scheduling.{!canSubmit && ' Petition submission is available to Moderator accounts only.'}</p></div>{canSubmit && <button type="button" className="button-primary" onClick={onCreate}><Icon name="plus" size={17} /> New request</button>}</div>
-      <div className="workflow-card"><div><p className="eyebrow">HOW A REQUEST MOVES FORWARD</p><h3>From community request to official review</h3></div><div className="workflow-steps"><span className="current"><i>1</i>Submitted</span><b>→</b><span><i>2</i>Under review</span><b>→</b><span><i>3</i>Decision</span><b>→</b><span><i>4</i>Government scheduling</span></div><p className="workflow-note">An approved petition is not an official project. A government department must review and schedule it separately.</p></div>
+      <div className="petition-intro"><div><span className="petition-feature-icon"><Icon name="people" size={22} /></span><h2>Small changes start with a conversation.</h2><p>Your requests are visible only to you and authorized reviewers. Approval creates an unpublished draft project that staff must review before publication.{!canSubmit && ' Sign in with a resident account to submit petitions.'}</p></div>{canSubmit && <button type="button" className="button-primary" onClick={onCreate}><Icon name="plus" size={17} /> New request</button>}</div>
+      <div className="workflow-card"><div><p className="eyebrow">HOW A REQUEST MOVES FORWARD</p><h3>From community request to staff review</h3></div><div className="workflow-steps"><span className="current"><i>1</i>Submitted</span><b>→</b><span><i>2</i>Under review</span><b>→</b><span><i>3</i>Decision</span><b>→</b><span><i>4</i>Draft project</span></div><p className="workflow-note">Approval creates an unpublished CivicSync draft. Staff must check its department and schedule, then publish it; this is not a government commitment.</p></div>
       <div className="section-heading petition-list-heading"><div><p className="eyebrow">PRIVATE TO YOUR ACCOUNT</p><h2>Your requests <span>{petitions.length}</span></h2></div></div>
-      {loading ? <div className="empty-state"><span className="loading-spinner" /><h3>Loading your requests…</h3></div> : petitions.length ? <div className="petition-list">{petitions.map((petition) => <article className="petition-card" key={petition.id}><div className="petition-card-top"><span className="petition-id">{petition.id}</span><StatusBadge status={petition.status} /></div><h3>{petition.title}</h3><p>{petition.description}</p><div className="petition-card-meta"><span><Icon name="pin" size={15} />{petition.locality} · {petition.pin}</span><span><Icon name="calendar" size={15} />Submitted {petition.submittedAt}</span><span>{petition.category}</span></div><div className="petition-response"><strong>Latest response</strong><p>{petition.response || 'No response yet.'}</p></div></article>)}</div> : <div className="empty-state"><span className="empty-icon"><Icon name="petition" size={23} /></span><h3>No requests {pin ? `for PIN ${pin}` : 'yet'}</h3><p>{canSubmit ? 'Submit a neighbourhood improvement request to begin tracking its review status.' : 'Requests can only be submitted by a Moderator account.'}</p>{canSubmit && <button type="button" className="button-primary" onClick={onCreate}><Icon name="plus" size={16} /> Start a request</button>}</div>}
+      {loading ? <div className="empty-state"><span className="loading-spinner" /><h3>Loading your requests…</h3></div>
+        : petitions.length ? <div className="petition-list">{petitions.map((petition) => (
+          <article className="petition-card" key={petition.id}>
+            <div className="petition-card-top"><span className="petition-id">{petition.id}</span><StatusBadge status={petition.status} /></div>
+            <h3>{petition.title}</h3>
+            <p>{petition.description}</p>
+            <div className="petition-card-meta"><span><Icon name="pin" size={15} />{petition.locality} · {petition.pin}</span><span><Icon name="calendar" size={15} />Submitted {petition.submittedAt}</span><span>{petition.category}</span></div>
+            <div className="petition-response"><strong>Latest response</strong><p>{petition.response || 'No response yet.'}</p>{petition.publicWorkId && <p>Linked draft project: {petition.publicWorkCode || 'created for staff review'}</p>}</div>
+          </article>
+        ))}</div>
+          : <div className="empty-state"><span className="empty-icon"><Icon name="petition" size={23} /></span><h3>No requests {pin ? `for PIN ${pin}` : 'yet'}</h3><p>{canSubmit ? 'Submit a neighbourhood improvement request to begin tracking its review status.' : 'Sign in with a resident account to submit petitions.'}</p>{canSubmit && <button type="button" className="button-primary" onClick={onCreate}><Icon name="plus" size={16} /> Start a request</button>}</div>}
     </section>
   );
 }
 
 function SignInPrompt({ onSignIn }) {
   return <div className="empty-state sign-in-prompt"><span className="empty-icon"><Icon name="shield" size={23} /></span><h3>Sign in to view your requests</h3><p>Petition details are private to the account that submitted them and authorized reviewers.</p><button type="button" className="button-primary" onClick={onSignIn}>Sign in with email OTP</button></div>;
+}
+
+function WastePickupPage({ pin, session, profile, verifiedResident, onSignIn, onVerifyResident }) {
+  const [pickups, setPickups] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [localities, setLocalities] = useState([]);
+  const [form, setForm] = useState({ locality: '', address: '', bagCount: '1', instructions: '' });
+
+  useEffect(() => {
+    if (!pin) return undefined;
+    let active = true;
+    getLocalitySuggestions(pin)
+      .then((names) => { if (active) setLocalities(names); })
+      .catch((loadError) => { if (active) setError(loadError.message); });
+    return () => { active = false; };
+  }, [pin]);
+
+  useEffect(() => {
+    if (!session || profile?.role !== 'citizen') return undefined;
+    let active = true;
+    async function load() {
+      setLoading(true);
+      try {
+        const items = await getResidentWastePickups(session.user.id);
+        if (active) setPickups(items);
+      } catch (loadError) {
+        if (active) setError(loadError.message);
+      } finally {
+        if (active) setLoading(false);
+      }
+    }
+    load();
+    return () => { active = false; };
+  }, [session, profile]);
+
+  useEffect(() => {
+    if (!session || profile?.role !== 'citizen') return undefined;
+    const channel = supabase
+      .channel(`civicsync-resident-pickups-${session.user.id}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'waste_pickups', filter: `resident_id=eq.${session.user.id}` }, () => {
+        getResidentWastePickups(session.user.id)
+          .then(setPickups)
+          .catch((loadError) => setError(loadError.message));
+      })
+      .subscribe();
+    return () => { void supabase.removeChannel(channel); };
+  }, [session, profile]);
+
+  async function submit(event) {
+    event.preventDefault();
+    if (!session) { onSignIn(); return; }
+    if (!verifiedResident) { onVerifyResident(); return; }
+    if (!pin) { setError('Verify a Kerala PIN before requesting a pickup.'); return; }
+    setBusy(true);
+    setError('');
+    try {
+      const created = await createWastePickup({ ...form, pin }, session.user.id);
+      setPickups((current) => [created, ...current]);
+      setForm({ locality: '', address: '', bagCount: '1', instructions: '' });
+    } catch (submitError) {
+      setError(submitError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!session) return <SignInPrompt onSignIn={onSignIn} />;
+  if (profile?.role !== 'citizen') return <div className="empty-state"><h3>Resident pickup requests only</h3><p>This account role does not submit household pickups. Sign in with a resident account to request a collection.</p></div>;
+
+  return (
+    <section className="waste-page">
+      <div className="updates-intro"><span className="updates-intro-icon"><Icon name="water" size={23} /></span><div><h2>Household bag pickup</h2><p>Request a collection and follow each delivery-style status update from assignment to pickup.</p></div></div>
+      {!pin && <div className="inline-notice" role="status">Search and verify a Kerala PIN code above before requesting a household pickup.</div>}
+      <form className="admin-form waste-request-form" onSubmit={submit}>
+        <div><h3>Request a collection</h3><p>Only your account, the assigned ASHA Worker, and CivicSync administrators can view the address.</p></div>
+        <div className="form-grid">
+          <label>Locality<input value={form.locality} onChange={(event) => setForm({ ...form, locality: event.target.value })} list="waste-locality-options" required maxLength={160} placeholder="Your postal area" /><datalist id="waste-locality-options">{localities.map((name) => <option key={name} value={name} />)}</datalist></label>
+          <label>Number of bags<input type="number" min="1" max="20" value={form.bagCount} onChange={(event) => setForm({ ...form, bagCount: event.target.value })} required /></label>
+        </div>
+        <label>Pickup address<textarea rows="2" value={form.address} onChange={(event) => setForm({ ...form, address: event.target.value })} required minLength={5} maxLength={500} placeholder="Enter the household address for the assigned worker" /></label>
+        <label>Pickup instructions <span className="field-hint">Optional</span><textarea rows="2" value={form.instructions} onChange={(event) => setForm({ ...form, instructions: event.target.value })} maxLength={1000} placeholder="Gate, landmark, or access instructions" /></label>
+        {!verifiedResident && <p className="field-hint">Before requesting a pickup, complete your private resident profile and verify your phone by SMS OTP. Date of birth is self-reported, not an official ID check.</p>}
+        {error && <p className="form-error" role="alert">{error}</p>}
+        <button type="submit" className="button-primary" disabled={busy || !pin}>{busy ? 'Requesting…' : verifiedResident ? 'Request pickup' : 'Verify details to continue'}</button>
+      </form>
+      <div className="section-heading"><div><p className="eyebrow">PRIVATE TO YOUR ACCOUNT</p><h2>Your pickup requests <span>{pickups.length}</span></h2></div></div>
+      {loading ? <div className="empty-state"><span className="loading-spinner" /><p>Loading your pickup requests…</p></div> : pickups.length ? <div className="pickup-list">{pickups.map((pickup) => <article className="pickup-card" key={pickup.recordId}>
+        <div className="admin-record-title"><div><span className="petition-id">{pickup.referenceCode} · {pickup.createdAt}</span><h3>{pickup.locality} · PIN {pickup.pin}</h3></div><span className="admin-status">{pickupStatuses[pickup.status]}</span></div>
+        <p>{pickup.bagCount} bag{pickup.bagCount === 1 ? '' : 's'} · {pickup.address}</p>
+        {pickup.instructions && <p>{pickup.instructions}</p>}
+        <div className="pickup-progress">{['requested', 'assigned', 'on_the_way', 'at_door', 'bag_collected', 'completed'].map((step) => <span key={step} className={['unable_to_collect'].includes(pickup.status) ? '' : Object.keys(pickupStatuses).indexOf(pickup.status) >= Object.keys(pickupStatuses).indexOf(step) ? 'complete' : ''}>{pickupStatuses[step]}</span>)}</div>
+      </article>)}</div> : <div className="empty-state"><h3>No household pickups yet</h3><p>Use the form above to create a private pickup request.</p></div>}
+    </section>
+  );
+}
+
+function AshaWorkerPage({ session }) {
+  const [pickups, setPickups] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [busyId, setBusyId] = useState('');
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    let active = true;
+    async function load() {
+      setLoading(true);
+      setError('');
+      try {
+        const items = await getAssignedWastePickups(session.user.id);
+        if (active) setPickups(items);
+      } catch (loadError) {
+        if (active) setError(loadError.message);
+      } finally {
+        if (active) setLoading(false);
+      }
+    }
+    load();
+    return () => { active = false; };
+  }, [session]);
+
+  useEffect(() => {
+    const channel = supabase
+      .channel(`civicsync-worker-pickups-${session.user.id}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'waste_pickups', filter: `assigned_worker_id=eq.${session.user.id}` }, () => {
+        getAssignedWastePickups(session.user.id)
+          .then(setPickups)
+          .catch((loadError) => setError(loadError.message));
+      })
+      .subscribe();
+    return () => { void supabase.removeChannel(channel); };
+  }, [session]);
+
+  async function advance(pickup, status) {
+    setBusyId(pickup.recordId);
+    setError('');
+    try {
+      await updateWastePickupStatus(pickup.recordId, status);
+      setPickups(await getAssignedWastePickups(session.user.id));
+    } catch (updateError) {
+      setError(updateError.message);
+    } finally {
+      setBusyId('');
+    }
+  }
+
+  const nextStatus = {
+    assigned: ['on_the_way', 'Start route'],
+    on_the_way: ['at_door', 'Mark arrived'],
+    at_door: ['bag_collected', 'Mark bag picked up'],
+    bag_collected: ['completed', 'Complete pickup'],
+  };
+
+  return (
+    <section className="waste-page">
+      <div className="updates-intro"><span className="updates-intro-icon"><Icon name="work" size={23} /></span><div><h2>My pickup route</h2><p>Assigned household pickups and their current collection status.</p></div></div>
+      {error && <div className="data-error" role="alert">{error}</div>}
+      {loading ? <div className="empty-state"><span className="loading-spinner" /><p>Loading your assigned route…</p></div> : pickups.length ? <div className="pickup-list">{pickups.map((pickup) => <article className="pickup-card" key={pickup.recordId}>
+        <div className="admin-record-title"><div><span className="petition-id">{pickup.referenceCode} · {pickup.createdAt}</span><h3>{pickup.locality} · PIN {pickup.pin}</h3></div><span className="admin-status">{pickupStatuses[pickup.status]}</span></div>
+        <p><strong>Pickup address:</strong> {pickup.address}</p><p>{pickup.bagCount} bag{pickup.bagCount === 1 ? '' : 's'}{pickup.instructions ? ` · ${pickup.instructions}` : ''}</p>
+        {nextStatus[pickup.status] && <button type="button" className="button-primary" disabled={busyId === pickup.recordId} onClick={() => advance(pickup, nextStatus[pickup.status][0])}>{busyId === pickup.recordId ? 'Updating…' : nextStatus[pickup.status][1]}</button>}
+        {pickup.status === 'at_door' && <button type="button" className="button-secondary" disabled={busyId === pickup.recordId} onClick={() => advance(pickup, 'unable_to_collect')}>Could not collect</button>}
+      </article>)}</div> : <div className="empty-state"><h3>No pickups assigned</h3><p>When an Admin assigns a household request to your account, it will appear here.</p></div>}
+    </section>
+  );
 }
 
 function UpdatesPage({ updates, loading, pin, onProject }) {

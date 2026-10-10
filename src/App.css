@@ -913,3 +913,116 @@ html[data-theme='dark'] { color-scheme: dark; color: #e3eaf3; background: #111a2
 @media (prefers-reduced-motion: reduce) {
   .loading-spinner { animation: none; }
 }
+
+.draft-project-fields {
+  display: grid;
+  gap: 9px;
+  padding: 12px;
+  border: 1px solid #dce6f1;
+  border-radius: 8px;
+  background: #f5f8fc;
+}
+.draft-project-fields > strong { color: #304862; font-size: 11px; }
+.draft-project-fields > p { margin: 0; color: #718095; font-size: 10px; line-height: 1.5; }
+.draft-project-fields label { display: grid; gap: 5px; color: #58687b; font-size: 10px; font-weight: 600; }
+.draft-project-fields input,
+.draft-project-fields select,
+.checkpoint-form input,
+.checkpoint-form textarea,
+.waste-page input,
+.waste-page textarea,
+.waste-page select,
+.admin-petition select {
+  width: 100%;
+  min-height: 36px;
+  padding: 8px 10px;
+  border: 1px solid #dce3eb;
+  border-radius: 6px;
+  color: #26374a;
+  background: #fff;
+  font-size: 11px;
+}
+.checkpoint-list { display: grid; gap: 8px; margin-top: 13px; }
+.checkpoint-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px;
+  border: 1px solid #e3e9f0;
+  border-radius: 7px;
+  background: #fbfcfe;
+}
+.checkpoint-row > span { display: grid; gap: 4px; }
+.checkpoint-row strong { color: #32465d; font-size: 10px; }
+.checkpoint-row small { color: #77869a; font-size: 9px; }
+.checkpoint-row span span { color: #637286; font-size: 10px; line-height: 1.5; }
+.checkpoint-form {
+  display: grid;
+  gap: 9px;
+  margin-top: 10px;
+  padding: 12px;
+  border: 1px solid #dce6f1;
+  border-radius: 8px;
+  background: #f7f9fc;
+}
+.checkpoint-form label,
+.waste-request-form label,
+.admin-petition > label { display: grid; gap: 5px; color: #58687b; font-size: 10px; font-weight: 600; }
+.checkpoint-form textarea,
+.waste-page textarea { resize: vertical; }
+.checkpoint-form > div { display: flex; flex-wrap: wrap; gap: 8px; }
+.waste-page { display: grid; gap: 16px; }
+.waste-request-form { max-width: 760px; }
+.pickup-list { display: grid; gap: 11px; }
+.pickup-card {
+  display: grid;
+  gap: 11px;
+  padding: 15px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: #fff;
+}
+.pickup-card h3 { margin: 5px 0 0; color: #2d4259; font-family: 'Manrope', sans-serif; font-size: 13px; }
+.pickup-card p { margin: 0; color: #637286; font-size: 10px; line-height: 1.55; }
+.pickup-progress { display: flex; gap: 6px; overflow-x: auto; padding: 4px 0 6px; }
+.pickup-progress span {
+  flex: 1 0 88px;
+  padding: 7px 8px;
+  border-radius: 6px;
+  color: #758397;
+  background: #f0f3f7;
+  text-align: center;
+  font-size: 8px;
+}
+.pickup-progress span.complete { color: #246243; background: #e5f4eb; font-weight: 700; }
+.app-frame[data-theme='dark'] .draft-project-fields,
+.app-frame[data-theme='dark'] .checkpoint-form,
+.app-frame[data-theme='dark'] .checkpoint-row,
+.app-frame[data-theme='dark'] .pickup-card { border-color: #2e4257; background: #1c2b3d; }
+.app-frame[data-theme='dark'] .draft-project-fields > strong,
+.app-frame[data-theme='dark'] .checkpoint-row strong,
+.app-frame[data-theme='dark'] .pickup-card h3 { color: #c6d7e9; }
+.app-frame[data-theme='dark'] .draft-project-fields > p,
+.app-frame[data-theme='dark'] .checkpoint-row small,
+.app-frame[data-theme='dark'] .checkpoint-row span span,
+.app-frame[data-theme='dark'] .pickup-card p { color: #9eafc2; }
+.app-frame[data-theme='dark'] .draft-project-fields label,
+.app-frame[data-theme='dark'] .checkpoint-form label,
+.app-frame[data-theme='dark'] .waste-request-form label,
+.app-frame[data-theme='dark'] .admin-petition > label { color: #bac8d9; }
+.app-frame[data-theme='dark'] .draft-project-fields input,
+.app-frame[data-theme='dark'] .draft-project-fields select,
+.app-frame[data-theme='dark'] .checkpoint-form input,
+.app-frame[data-theme='dark'] .checkpoint-form textarea,
+.app-frame[data-theme='dark'] .waste-page input,
+.app-frame[data-theme='dark'] .waste-page textarea,
+.app-frame[data-theme='dark'] .waste-page select,
+.app-frame[data-theme='dark'] .admin-petition select { border-color: #3a4b5f; color: #d4e0ed; background: #1e2d3e; }
+.app-frame[data-theme='dark'] .pickup-progress span { color: #a9b7c8; background: #243446; }
+.app-frame[data-theme='dark'] .pickup-progress span.complete { color: #9ed5b5; background: #243b30; }
+@media (max-width: 600px) {
+  .checkpoint-row { flex-direction: column; }
+  .pickup-card .admin-record-title { align-items: flex-start; flex-direction: column; }
+  .draft-project-fields .form-grid { grid-template-columns: 1fr; }
+}

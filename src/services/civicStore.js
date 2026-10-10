@@ -17,6 +17,9 @@ function mapProject(row) {
     isPublished: row.is_published,
     updated: new Intl.DateTimeFormat('en-IN', { dateStyle: 'medium' }).format(new Date(row.updated_at)),
     timeline: (row.project_events ?? []).map((event) => ({
+      recordId: event.id,
+      isPublic: event.is_public,
+      isCheckpoint: event.is_checkpoint,
       date: new Intl.DateTimeFormat('en-IN', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(event.created_at)),
       title: event.title,
       detail: event.description,
@@ -39,6 +42,24 @@ function mapPetition(row) {
     description: row.description,
     reason: row.reason,
     response: row.official_response ?? '',
+    publicWorkId: row.public_work_id,
+    publicWorkCode: row.public_work?.reference_code ?? '',
+  };
+}
+
+function mapWastePickup(row) {
+  return {
+    recordId: row.id,
+    referenceCode: row.reference_code,
+    residentId: row.resident_id,
+    assignedWorkerId: row.assigned_worker_id,
+    pin: row.pin_code,
+    locality: row.locality,
+    address: row.address,
+    bagCount: row.bag_count,
+    instructions: row.instructions ?? '',
+    status: row.status,
+    createdAt: new Intl.DateTimeFormat('en-IN', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(row.created_at)),
   };
 }
 
@@ -59,10 +80,29 @@ export async function getCivicSyncRole(userId) {
   return data;
 }
 
+export async function getResidentVerification(userId) {
+  const { data, error } = await supabase
+    .from('resident_verifications')
+    .select('full_name, date_of_birth')
+    .eq('user_id', userId)
+    .maybeSingle();
+  throwStoreError('Could not load your private verification details', error);
+  return data;
+}
+
+export async function saveResidentVerification(userId, fullName, dateOfBirth) {
+  const { error } = await supabase.from('resident_verifications').upsert({
+    user_id: userId,
+    full_name: fullName.trim(),
+    date_of_birth: dateOfBirth,
+  });
+  throwStoreError('Could not save your private verification details', error);
+}
+
 export async function getProjects({ pin }) {
   const { data, error } = await supabase
     .from('public_works')
-    .select('*, departments(name), project_events(title, description, department_name, created_at)')
+    .select('*, departments(name), project_events(id, title, description, department_name, created_at, is_public, is_checkpoint)')
     .eq('pin_code', pin)
     .eq('is_published', true)
     .order('start_date');
@@ -74,7 +114,7 @@ export async function getProjects({ pin }) {
 export async function getPetitions() {
   const { data, error } = await supabase
     .from('petitions')
-    .select('id, reference_code, user_id, title, pin_code, locality, category, status, submitted_at, description, official_response')
+    .select('id, reference_code, user_id, title, pin_code, locality, category, status, submitted_at, description, official_response, public_work_id, public_work:public_works(reference_code)')
     .order('submitted_at', { ascending: false });
 
   throwStoreError('Could not load your petitions', error);
@@ -84,7 +124,7 @@ export async function getPetitions() {
 export async function getAdminProjects() {
   const { data, error } = await supabase
     .from('public_works')
-    .select('*, departments(name), project_events(title, description, department_name, created_at)')
+    .select('*, departments(name), project_events(id, title, description, department_name, created_at, is_public, is_checkpoint)')
     .order('updated_at', { ascending: false });
   throwStoreError('Could not load managed projects', error);
   return (data ?? []).map(mapProject);
@@ -93,7 +133,7 @@ export async function getAdminProjects() {
 export async function getAdminPetitions() {
   const { data, error } = await supabase
     .from('petitions')
-    .select('id, reference_code, user_id, title, pin_code, locality, category, status, submitted_at, description, reason, official_response')
+    .select('id, reference_code, user_id, title, pin_code, locality, category, status, submitted_at, description, reason, official_response, public_work_id, public_work:public_works(reference_code)')
     .order('submitted_at', { ascending: false });
   throwStoreError('Could not load petitions for review', error);
   return (data ?? []).map(mapPetition);
@@ -197,12 +237,29 @@ export async function savePublicWork(work, userId) {
   throwStoreError(work.recordId ? 'Could not update project' : 'Could not create project', error);
 }
 
-export async function reviewPetition(recordId, status, response) {
-  const { error } = await supabase
-    .from('petitions')
-    .update({ status, official_response: response.trim() || null })
-    .eq('id', recordId);
+export async function reviewPetition(recordId, status, response, project = {}) {
+  const { error } = await supabase.rpc('review_civicsync_petition', {
+    target_petition: recordId,
+    next_status: status,
+    response_text: response.trim(),
+    project_department: project.departmentId || null,
+    project_category: project.category || null,
+    project_start: project.startDate || null,
+    project_end: project.endDate || null,
+  });
   throwStoreError('Could not update petition status', error);
+}
+
+export async function saveProjectCheckpoint(projectId, checkpoint, publish) {
+  const { data, error } = await supabase.rpc('save_project_checkpoint', {
+    target_project: projectId,
+    checkpoint_title: checkpoint.title,
+    checkpoint_description: checkpoint.description,
+    publish_checkpoint: publish,
+    target_event: checkpoint.recordId || null,
+  });
+  throwStoreError(publish ? 'Could not publish project checkpoint' : 'Could not save project checkpoint', error);
+  return data;
 }
 
 export async function createDepartment(name) {
@@ -238,11 +295,79 @@ export async function submitPetition(petition, userId) {
       reason: petition.reason.trim() || null,
       status: 'submitted',
     })
-    .select('id, reference_code, title, pin_code, locality, category, status, submitted_at, description, official_response')
+    .select('id, reference_code, user_id, title, pin_code, locality, category, status, submitted_at, description, official_response, public_work_id')
     .single();
 
   if (error) throw new Error(`Could not submit your request: ${error.message}`, { cause: error });
   return mapPetition(data);
+}
+
+export async function createWastePickup(request, userId) {
+  const { data, error } = await supabase
+    .from('waste_pickups')
+    .insert({
+      resident_id: userId,
+      pin_code: request.pin,
+      locality: request.locality.trim(),
+      address: request.address.trim(),
+      bag_count: Number(request.bagCount),
+      instructions: request.instructions.trim() || null,
+    })
+    .select('id, reference_code, resident_id, assigned_worker_id, pin_code, locality, address, bag_count, instructions, status, created_at')
+    .single();
+  throwStoreError('Could not request household pickup', error);
+  return mapWastePickup(data);
+}
+
+export async function getResidentWastePickups(userId) {
+  const { data, error } = await supabase
+    .from('waste_pickups')
+    .select('id, reference_code, resident_id, assigned_worker_id, pin_code, locality, address, bag_count, instructions, status, created_at')
+    .eq('resident_id', userId)
+    .order('created_at', { ascending: false });
+  throwStoreError('Could not load your household pickups', error);
+  return (data ?? []).map(mapWastePickup);
+}
+
+export async function getAssignedWastePickups(userId) {
+  const { data, error } = await supabase
+    .from('waste_pickups')
+    .select('id, reference_code, resident_id, assigned_worker_id, pin_code, locality, address, bag_count, instructions, status, created_at')
+    .eq('assigned_worker_id', userId)
+    .order('created_at');
+  throwStoreError('Could not load assigned household pickups', error);
+  return (data ?? []).map(mapWastePickup);
+}
+
+export async function getAdminWastePickups() {
+  const { data, error } = await supabase
+    .from('waste_pickups')
+    .select('id, reference_code, resident_id, assigned_worker_id, pin_code, locality, address, bag_count, instructions, status, created_at')
+    .order('created_at', { ascending: false });
+  throwStoreError('Could not load household pickups', error);
+  return (data ?? []).map(mapWastePickup);
+}
+
+export async function getAshaWorkers() {
+  const { data, error } = await supabase.rpc('list_civicsync_asha_workers');
+  throwStoreError('Could not load ASHA Worker accounts', error);
+  return data ?? [];
+}
+
+export async function assignWastePickup(pickupId, workerId) {
+  const { error } = await supabase.rpc('assign_civicsync_waste_pickup', {
+    target_pickup: pickupId,
+    target_worker: workerId,
+  });
+  throwStoreError('Could not assign household pickup', error);
+}
+
+export async function updateWastePickupStatus(pickupId, status) {
+  const { error } = await supabase.rpc('update_civicsync_waste_pickup_status', {
+    target_pickup: pickupId,
+    next_status: status,
+  });
+  throwStoreError('Could not update pickup status', error);
 }
 
 export async function getUpdates(pin) {

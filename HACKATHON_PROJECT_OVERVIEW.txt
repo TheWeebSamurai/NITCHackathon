@@ -1,0 +1,348 @@
+CIVICSYNC
+Public works, in sync
+Hackathon project overview
+
+
+1. THE PROJECT IN ONE MINUTE
+
+CivicSync is a Kerala-focused civic information and community service web
+application. A resident can verify a six-digit Kerala postal PIN, see public
+works and notices published for that area, submit and track a community
+improvement petition, or request household waste-bag pickup. Authorized staff
+use a secure Control Room to manage public project information, petitions, and
+pickup assignments.
+
+The idea is to put useful, locality-specific civic information in one clear
+place and make it easier for residents and public-service teams to understand
+what is happening and what needs attention.
+
+Important: CivicSync is a hackathon prototype, not an official government
+portal. It does not currently connect to government project-management systems.
+Public works appear only after authorized users enter and publish them in
+CivicSync.
+
+
+2. THE PROBLEM
+
+- Civic information can be scattered across department websites, notices, and
+  social channels.
+- Residents may not know which works are planned or underway near their home.
+- It can be difficult to communicate a local concern and understand what
+  happens after it is submitted.
+- Project information is more useful when residents can find it by locality
+  instead of searching a broad statewide list.
+
+
+3. THE PROPOSED SOLUTION
+
+CivicSync connects an area lookup, local public-work listings, public project
+updates, and a role-based petition workflow in one responsive web interface.
+The location flow is designed around Kerala PIN codes and Indian postal-area
+names.
+
+Primary audiences:
+- Residents who want to see local public works and submit or track a concern.
+- Residents who submit petitions after adding a private name and date of birth.
+- ASHA Worker accounts assigned household waste-pickup requests.
+- Department officials and coordinators who manage project information within
+  their permissions.
+- Administrators who manage staff access, departments, categories, and petition
+  decisions.
+
+
+4. WHAT THE PROTOTYPE DOES
+
+Resident experience:
+- Checks a six-digit PIN through a Supabase Edge Function and a third-party
+  postal lookup service; only PINs verified as belonging to Kerala are accepted.
+- Shows published public works for the verified PIN, with locality, department,
+  category, status, dates, and expected disruption details.
+- Provides search and filters for project text, locality, status, and department.
+- Shows project timelines and public notices when staff have published them.
+- Flags overlapping schedules for the same locality as a planning note. This is
+  not an official determination that projects conflict.
+- Supports email sign-in and secondary phone SMS OTP verification through
+  Supabase Auth.
+- Stores resident name and date of birth in a private profile table; date of
+  birth is self-reported and is not matched to a government identity source.
+- Provides account-private petition viewing and progress status for the
+  submitting account and authorized reviewers.
+- Petition status changes are synchronized to the resident view. Admin approval
+  atomically creates a linked, unpublished draft public-work project.
+- Residents can request household waste-bag pickups with locality, address,
+  bag count, and instructions. Pickup addresses are private to the resident,
+  administrators, and the assigned worker.
+- Assigned ASHA Workers have a dedicated route panel with ordered statuses:
+  assigned, on the way, at the home, bag picked up, and completed. Status changes
+  are synchronized to the resident's pickup tracker.
+- Offers light and dark themes.
+
+Staff experience:
+- The Control Room supports public-work creation and editing, draft/publication
+  state, petition review, checkpoint authoring, checkpoint approval, and
+  household pickup assignments.
+- Department officials can create project records; coordinator/admin workflows
+  can publish projects according to the application rules.
+- Admins can add, rename, and remove departments, subject to record usage.
+- Admins can add and edit project/petition categories, choose where a category
+  is used, hide or restore it for new forms, and delete it when it is unused.
+- Locality suggestions combine verified postal-office names with localities
+  already entered for that PIN.
+- Admins can assign roles to existing CivicSync accounts by email when the
+  relevant database migration is installed, including the ASHA Worker role.
+- Coordinators and Admins can approve private project checkpoints for display
+  on the public project timeline.
+
+Petition workflow:
+- Resident accounts (including Moderator accounts) can submit petitions after
+  completing private name/date-of-birth details and verifying phone access by
+  SMS OTP.
+- Admin accounts cannot submit petitions.
+- Admins can review petitions from other accounts, but cannot review their own.
+- Admin approval creates a linked draft CivicSync public-work record; it remains
+  unpublished until staff select an appropriate status and publish it.
+- A CivicSync draft is not a government commitment, funding decision, or
+  official schedule.
+- Petition details are intended to be visible only to the submitting account
+  and authorized reviewers, enforced through Supabase Row Level Security (RLS).
+
+Household waste-pickup workflow:
+- Verified resident accounts submit a private pickup request for their Kerala
+  PIN and household address.
+- Admins assign the request to an existing ASHA Worker account.
+- The assigned worker updates the request in ordered steps. The resident sees
+  those updates in their pickup tracker.
+- The ASHA Worker label is an application role assigned by CivicSync
+  administrators; the prototype does not verify employment or represent an
+  official ASHA program.
+
+
+5. HOW IT WORKS
+
+1. The resident enters a Kerala PIN.
+2. The front end invokes the verify-kerala-pin Supabase Edge Function.
+3. The function checks a short-lived database cache or queries the postal lookup
+   service, filters for Kerala, and caches verified PIN details.
+4. CivicSync loads published project records and public notices associated with
+   that PIN from Supabase.
+5. A resident signs in with email OTP and adds a private name and date of birth
+   before submitting a petition. Household pickup additionally requires phone
+   SMS OTP verification.
+6. An Admin reviews a petition from another account. Approval creates a linked
+   unpublished draft project; staff can add private checkpoints and approve
+   them for the public timeline.
+7. For household pickup, an Admin assigns an ASHA Worker; the worker advances
+   the pickup status and the resident tracker receives synchronized updates.
+
+Core data includes user profiles and roles, departments, verified PIN records,
+public works, project timeline events, petitions, notifications, audit logs,
+and project categories.
+
+
+6. TECHNOLOGY
+
+- Front end: React with JSX, JavaScript, CSS, and Vite.
+- Backend services: Supabase Auth, PostgreSQL database, Row Level Security,
+  RPC functions, and Edge Functions.
+- Database client: @supabase/supabase-js.
+- Location verification: api.postalpincode.in, accessed by a Supabase Edge
+  Function rather than directly by the browser.
+- Development checks: ESLint and Vite production build.
+
+The browser uses the Supabase URL and publishable key supplied through Vite
+environment variables. Do not put a Supabase service-role key in front-end
+environment variables or commit private credentials.
+
+
+7. STRENGTHS / PROS
+
+- Local-first experience: residents search by a familiar Kerala PIN rather than
+  navigating a broad catalogue.
+- A complete civic workflow concept: area lookup, project visibility, updates,
+  petition submission, and staff review are represented in one product.
+- Clear responsibility boundaries: resident submissions, staff assignment,
+  project/checkpoint publication, and petition review are role-gated.
+- Security-aware architecture: sensitive petition access is designed around
+  database RLS, and the service-role key is used only server-side by the Edge
+  Function.
+- Useful staff tools: admins can maintain departments, categories, account
+  roles, and locality data without changing application code for every label.
+- Better operational awareness: schedule overlaps are surfaced to staff and
+  residents as a coordination prompt.
+- Responsive UI with light/dark themes and Indian date formatting.
+- Private resident verification data and address-scoped pickup access policies.
+- Live synchronization for petition decisions, published project checkpoints,
+  and waste pickup status changes.
+- Prototype status and the absence of a government data connection are
+  disclosed in the interface instead of being presented as official data.
+
+
+8. LIMITATIONS / CONS
+
+- No official government integration: public works are not synced from Kerala
+  government or department systems. The displayed information must be entered
+  and maintained by authorized CivicSync users.
+- Data completeness and accuracy depend on staff. Stale or incorrect records
+  could mislead residents unless ownership, review, and update processes are
+  established.
+- The external postal lookup service is a dependency. Availability, response
+  quality, terms, and rate limits are outside CivicSync's control.
+- This is a prototype and has not been demonstrated here as a fully audited,
+  production-hardened public service.
+- Applying the Supabase database migrations is required. Features can fail or
+  show missing-table/function errors if database setup is incomplete.
+- Role assignment by email depends on the latest workflow migration being
+  applied and the Supabase API schema cache being refreshed. If role changes
+  return a missing-function/schema-cache error, apply the migrations listed in
+  the setup checklist below, then reload the schema cache.
+- Phone OTP requires the Supabase phone provider and an SMS provider to be
+  enabled and configured for household pickup requests; the prototype does not
+  provide the SMS service.
+- Name and date of birth are self-reported. Phone OTP proves access to a phone,
+  not a person's legal identity or eligibility for an official service.
+- There is no application-level petition submission throttle. The existing
+  temporary IP-hash limit applies to PIN lookups only.
+- Email and push notifications are not implemented. Status changes sync in-app;
+  CivicSync does not send pickup or petition updates by email/SMS.
+- Petition approval is not a promise that a department will fund, schedule, or
+  complete the requested work. Approved petitions create unpublished drafts,
+  not government projects.
+- Waste collection operations, worker identity/employment, service areas,
+  staffing, and collection schedules are not connected to an official provider.
+- There is no government identity verification, e-signature, public voting,
+  petition threshold, or grievance escalation system in this prototype.
+- Operational needs such as department onboarding, moderation policy, data
+  retention, backups, support, accessibility testing, and incident response
+  still need formal plans.
+
+
+9. RISKS AND SAFEGUARDS TO DISCUSS
+
+- Misleading or outdated information:
+  Require named department owners, timestamps, review procedures, and clear
+  source/status labels before a production launch.
+- Sensitive petition content:
+  Keep RLS enabled, test policies with multiple real test accounts, minimize
+  collected personal data, and define retention and deletion procedures.
+- Resident profile and household address data:
+  Date of birth, verified phone, and precise pickup address are sensitive.
+  Restrict database access, avoid showing DOB in staff lists, and set a clear
+  retention/deletion policy before real residents use the feature.
+- Privilege misuse:
+  Keep role changes restricted to administrators, audit changes, and test
+  moderator/admin restrictions against the live database policies.
+- External service failure:
+  Monitor postal lookup errors, retain sensible cache behavior, and provide a
+  clear retry path. Do not silently mark an unverified PIN as valid.
+- Government-service impersonation:
+  Clearly state that CivicSync is independent and that a petition decision is
+  not an official government commitment.
+
+
+10. HACKATHON DEMO FLOW
+
+Suggested 3-minute demonstration:
+
+1. Introduce the problem: residents have difficulty finding what is happening
+   near them and where to raise a concern.
+2. Enter a valid Kerala PIN, such as 695001, and show the verified postal areas.
+3. Browse the project's locality view and demonstrate search/filtering. Use a
+   project record already entered in the connected Supabase project; otherwise
+   explain that published data appears once staff add it.
+4. Open a project to show department, schedule, disruption details, timeline,
+   and any schedule-overlap prompt.
+5. Sign in with a resident demo account, add the private resident profile, and
+   submit a petition. Phone OTP is not required for this step.
+6. Switch to a separate Admin demo account, approve that petition, and show the
+   linked draft project plus checkpoint approval controls.
+7. Show a separate ASHA Worker demo account and move an assigned pickup through
+   its status steps; return to the resident account to show synchronized status.
+8. Close with the key limitation: the prototype demonstrates civic workflows,
+   but official project data and waste-collection operations are not connected.
+
+Do not demonstrate role restrictions using the same account for both roles.
+Before the event, test with separate Moderator, Admin, and ordinary-user
+accounts. Never display real people's private petition information or
+credentials on the projector.
+
+
+11. SETUP CHECKLIST
+
+Prerequisites:
+- Node.js and npm.
+- A Supabase project with Auth configured.
+- A local .env.local file containing:
+    VITE_SUPABASE_URL=<your Supabase project URL>
+    VITE_SUPABASE_PUBLISHABLE_KEY=<your Supabase publishable key>
+
+Install and run:
+    npm install
+    npm run dev
+
+Verify the code:
+    npm run lint
+    npm run build
+
+Apply the project's SQL migrations in chronological order in the Supabase SQL
+Editor, using the files in supabase/migrations:
+    20261009200000_civicsync_core.sql
+    20261010011500_admin_role_by_email.sql
+    20261010012000_seed_kerala_departments.sql
+    20261010013000_manage_departments_and_categories.sql
+    20261010014000_allow_staff_petition_submissions.sql
+    20261010020000_moderator_petition_workflow.sql
+    20261010030000_resident_pickups_and_petition_sync.sql
+    20261010031000_allow_petitions_without_phone_otp.sql
+
+The moderator workflow migration supersedes the earlier broad petition policy;
+the resident/pickup migration enables resident submissions, ASHA Worker pickup
+roles, linked petition drafts, and checkpoint review. The final migration lets
+residents submit petitions with a private profile without requiring phone OTP;
+phone OTP remains required for household pickups. Apply migrations in order,
+including both final migrations.
+After creating/updating RPC functions, refresh the Supabase API schema cache if
+the dashboard reports that a function is missing:
+    NOTIFY pgrst, 'reload schema';
+
+Deploy the verify-kerala-pin Edge Function and configure its server-side
+Supabase environment secrets according to the Supabase project settings. Do
+not add the service-role key to .env.local or the Vite client.
+
+Enable the Supabase Auth phone provider and configure an SMS provider before
+using household pickup verification. Email OTP is still used for account
+sign-in.
+
+Finally, verify that at least one Admin, resident, and ASHA Worker demo account
+exist, departments/categories are populated, and test data is available for the
+PIN used in the demonstration. Assign the ASHA Worker role from the Admin
+Control Room and assign at least one pickup to that worker.
+
+
+12. ROADMAP
+
+Near-term:
+- Add automated tests for petition, resident profile, pickup, and role policies
+  using separate accounts.
+- Add better project event authoring and a clear review/publish history.
+- Improve loading, empty, and error states for incomplete database setup.
+- Add operational monitoring for Edge Function and postal service failures.
+
+Future:
+- Integrate official, authorized project data feeds where agreements and APIs
+  exist.
+- Add verified department ownership and update reminders.
+- Add opt-in email/push notifications with consent and delivery controls.
+- Add accessibility and Malayalam localization reviews.
+- Define governance, privacy, retention, support, and appeals processes.
+- Conduct a security review, load testing, backup/restore test, and independent
+  usability testing before any public launch.
+
+
+13. CLOSING PITCH
+
+CivicSync gives residents a locality-first way to understand public works,
+raise community needs, and track household pickups, while giving authorized
+staff structured tools to review and update the service. The hackathon
+prototype demonstrates the workflow; the next step is validating it with
+residents and service partners and connecting it to reliable, authorized
+operations and public data.
